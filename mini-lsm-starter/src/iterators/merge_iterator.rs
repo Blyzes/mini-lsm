@@ -17,6 +17,7 @@
 
 use std::cmp::{self};
 use std::collections::BinaryHeap;
+use std::collections::binary_heap::PeekMut;
 
 use anyhow::Result;
 
@@ -59,7 +60,25 @@ pub struct MergeIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        let mut heap = BinaryHeap::new();
+
+        for (idx, iter) in iters.into_iter().enumerate() {
+            if iter.is_valid() {
+                heap.push(HeapWrapper(idx, iter));
+            }
+        }
+
+        let curr;
+        if !heap.is_empty() {
+            curr = heap.pop();
+        } else {
+            curr = None;
+        }
+
+        Self {
+            iters: heap,
+            current: curr,
+        }
     }
 }
 
@@ -68,19 +87,64 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
 {
     type KeyType<'a> = KeySlice<'a>;
 
-    fn key(&self) -> KeySlice {
-        unimplemented!()
+    fn key(&self) -> KeySlice<'_> {
+        self.current.as_ref().unwrap().1.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.current
+            .as_ref()
+            .map(|x| x.1.is_valid())
+            .unwrap_or(false)
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        let current = match self.current.as_mut() {
+            Some(c) => c,
+            None => return Ok(()),
+        };
+
+        // Pop the item out of the heap if they have the same value.
+        while let Some(mut top) = self.iters.peek_mut() {
+            if top.1.key() != current.1.key() {
+                break;
+            }
+
+            // Case 1: an error occurred when calling `next`.
+            if let e @ Err(_) = top.1.next() {
+                PeekMut::pop(top);
+                return e;
+            }
+
+            // Case 2: iter is no longer valid.
+            if !top.1.is_valid() {
+                PeekMut::pop(top);
+            }
+        }
+
+        current.1.next()?;
+
+        // If the current iterator is invalid, pop it out of the heap and select the next one.
+        if !current.1.is_valid() {
+            if let Some(iter) = self.iters.pop() {
+                *current = iter;
+            } else {
+                self.current = None;
+            }
+            return Ok(());
+        }
+
+        // Otherwise, compare with heap top and swap if necessary.
+        if let Some(mut top) = self.iters.peek_mut() {
+            if *current < *top {
+                std::mem::swap(&mut *top, current);
+            }
+        }
+
+        Ok(())
     }
 }

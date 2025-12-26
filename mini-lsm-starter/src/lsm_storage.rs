@@ -30,6 +30,7 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::merge_iterator::MergeIterator;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
 use crate::mem_table::MemTable;
@@ -328,6 +329,7 @@ impl LsmStorageInner {
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
         let incr = _key.len() + _value.len();
+
         if self.get_memtable_size() + incr > self.options.target_sst_size {
             {
                 let state_lock = self.state_lock.lock();
@@ -336,8 +338,10 @@ impl LsmStorageInner {
                 }
             }
         }
+
         let state = self.state.read();
         state.memtable.put(_key, _value)?;
+
         Ok(())
     }
 
@@ -407,11 +411,24 @@ impl LsmStorageInner {
     }
 
     /// Create an iterator over a range of keys.
+    /// The tombstones is skipped in LsmIterator::new() and LsmIterator::next().
     pub fn scan(
         &self,
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        unimplemented!()
+        let mut tables = Vec::new();
+
+        tables.push(Box::new(self.state.read().memtable.scan(_lower, _upper)));
+
+        self.state
+            .read()
+            .imm_memtables
+            .iter()
+            .for_each(|m| tables.push(Box::new(m.scan(_lower, _upper))));
+
+        let iter = FusedIterator::new(LsmIterator::new(MergeIterator::create(tables))?);
+
+        Ok(iter)
     }
 }

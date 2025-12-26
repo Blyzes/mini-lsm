@@ -15,7 +15,7 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::{
     iterators::{StorageIterator, merge_iterator::MergeIterator},
@@ -30,8 +30,19 @@ pub struct LsmIterator {
 }
 
 impl LsmIterator {
+    // Create a new LSM iterator from an existing iterator.
     pub(crate) fn new(iter: LsmIteratorInner) -> Result<Self> {
-        Ok(Self { inner: iter })
+        let mut iter = Self { inner: iter };
+        iter.skip_tombstones()?;
+        Ok(iter)
+    }
+
+    // Skip all tombstone entries.
+    pub fn skip_tombstones(&mut self) -> Result<()> {
+        while self.inner.is_valid() && self.inner.value().is_empty() {
+            self.inner.next()?;
+        }
+        Ok(())
     }
 }
 
@@ -39,19 +50,25 @@ impl StorageIterator for LsmIterator {
     type KeyType<'a> = &'a [u8];
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.inner.is_valid() && !self.inner.value().is_empty()
     }
 
     fn key(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.key().raw_ref()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.inner.value()
     }
 
+    // Move to the next position, skipping tombstones.
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if !self.inner.is_valid() {
+            return Ok(());
+        }
+
+        self.inner.next()?;
+        self.skip_tombstones()
     }
 }
 
@@ -79,18 +96,30 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
         Self: 'a;
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        !self.has_errored && self.iter.is_valid()
     }
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        self.iter.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.iter.value()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        if self.has_errored {
+            bail!("the iterator is invalid");
+        }
+        if self.iter.is_valid() {
+            match self.iter.next() {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    self.has_errored = true;
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
     }
 }
