@@ -417,7 +417,7 @@ impl LsmStorageInner {
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        let mut tables = Vec::new();
+        let mut tables: Vec<Box<crate::mem_table::MemTableIterator>> = Vec::new();
 
         tables.push(Box::new(self.state.read().memtable.scan(_lower, _upper)));
 

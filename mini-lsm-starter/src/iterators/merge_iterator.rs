@@ -68,12 +68,7 @@ impl<I: StorageIterator> MergeIterator<I> {
             }
         }
 
-        let curr;
-        if !heap.is_empty() {
-            curr = heap.pop();
-        } else {
-            curr = None;
-        }
+        let curr = if !heap.is_empty() { heap.pop() } else { None };
 
         Self {
             iters: heap,
@@ -139,10 +134,10 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         }
 
         // Otherwise, compare with heap top and swap if necessary.
-        if let Some(mut top) = self.iters.peek_mut() {
-            if *current < *top {
-                std::mem::swap(&mut *top, current);
-            }
+        if let Some(mut top) = self.iters.peek_mut()
+            && *current < *top
+        {
+            std::mem::swap(&mut *top, current);
         }
 
         Ok(())

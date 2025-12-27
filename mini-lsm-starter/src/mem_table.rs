@@ -131,8 +131,8 @@ impl MemTable {
         let mut iter = MemTableIterator::new(
             self.map.clone(),
             |map_ref| {
-                let lower = _lower.map(|x| Bytes::copy_from_slice(x));
-                let upper = _upper.map(|x| Bytes::copy_from_slice(x));
+                let lower = _lower.map(Bytes::copy_from_slice);
+                let upper = _upper.map(Bytes::copy_from_slice);
                 map_ref.range((lower, upper))
             },
             (Bytes::new(), Bytes::new()),
