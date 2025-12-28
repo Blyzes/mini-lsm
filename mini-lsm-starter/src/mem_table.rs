@@ -130,11 +130,7 @@ impl MemTable {
     pub fn scan(&self, _lower: Bound<&[u8]>, _upper: Bound<&[u8]>) -> MemTableIterator {
         let mut iter = MemTableIterator::new(
             self.map.clone(),
-            |map_ref| {
-                let lower = _lower.map(Bytes::copy_from_slice);
-                let upper = _upper.map(Bytes::copy_from_slice);
-                map_ref.range((lower, upper))
-            },
+            |map_ref| map_ref.range((map_bound(_lower), map_bound(_upper))),
             (Bytes::new(), Bytes::new()),
         );
         let _ = iter.next();

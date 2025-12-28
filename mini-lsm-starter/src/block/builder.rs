@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
+// #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
+// #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use bytes::BufMut;
 
@@ -75,11 +75,14 @@ impl BlockBuilder {
 
     /// Check if there is no key-value pair in the block.
     pub fn is_empty(&self) -> bool {
-        self.first_key.is_empty()
+        self.offsets.is_empty()
     }
 
     /// Finalize the block.
     pub fn build(self) -> Block {
+        if self.is_empty() {
+            panic!("block should not be empty")
+        }
         Block {
             data: self.data,
             offsets: self.offsets,

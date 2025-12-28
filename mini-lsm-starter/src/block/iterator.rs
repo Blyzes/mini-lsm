@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
+// #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
+// #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::{cmp::Ordering, sync::Arc};
 
@@ -118,6 +118,7 @@ impl BlockIterator {
         self.seek_to_idx(low);
     }
 
+    /// Seeks to the idx-th key in the block.
     fn seek_to_idx(&mut self, idx: usize) {
         if idx >= self.block.offsets.len() {
             self.key.clear();
@@ -130,6 +131,8 @@ impl BlockIterator {
         self.idx = idx;
     }
 
+    /// Seek to the specified position and update the current `key` and `value`
+    /// Index update will be handled by caller
     fn seek_to_offset(&mut self, offset: usize) {
         let mut entry = &self.block.data[offset..];
 
