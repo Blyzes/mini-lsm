@@ -46,6 +46,7 @@ impl SsTableBuilder {
             builder: BlockBuilder::new(block_size),
             first_key: KeyVec::new(),
             last_key: KeyVec::new(),
+            // pre-allocate 256MB for SSTable data
             data: Vec::with_capacity(256 * 1024 * 1024),
             meta: Vec::new(),
             block_size,

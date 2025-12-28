@@ -30,12 +30,15 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
+use crate::iterators::StorageIterator;
 use crate::iterators::merge_iterator::MergeIterator;
+use crate::iterators::two_merge_iterator::TwoMergeIterator;
+use crate::key::KeySlice;
 use crate::lsm_iterator::{FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::MemTable;
+use crate::mem_table::{MemTable, map_bound};
 use crate::mvcc::LsmMvccInner;
-use crate::table::SsTable;
+use crate::table::{SsTable, SsTableIterator};
 
 pub type BlockCache = moka::sync::Cache<(usize, usize), Arc<Block>>;
 
@@ -127,6 +130,33 @@ impl LsmStorageOptions {
             serializable: false,
         }
     }
+}
+
+fn range_overlap(
+    user_begin: Bound<&[u8]>,
+    user_end: Bound<&[u8]>,
+    table_begin: KeySlice,
+    table_end: KeySlice,
+) -> bool {
+    match user_end {
+        Bound::Excluded(key) if key <= table_begin.raw_ref() => {
+            return false;
+        }
+        Bound::Included(key) if key < table_begin.raw_ref() => {
+            return false;
+        }
+        _ => {}
+    }
+    match user_begin {
+        Bound::Excluded(key) if key >= table_end.raw_ref() => {
+            return false;
+        }
+        Bound::Included(key) if key > table_end.raw_ref() => {
+            return false;
+        }
+        _ => {}
+    }
+    true
 }
 
 #[derive(Clone, Debug)]
@@ -299,9 +329,12 @@ impl LsmStorageInner {
 
     /// Get a key from the storage. In day 7, this can be further optimized by using a bloom filter.
     pub fn get(&self, _key: &[u8]) -> Result<Option<Bytes>> {
-        let state = self.state.read();
+        let snapshot = {
+            let state = self.state.read();
+            Arc::clone(&state)
+        };
 
-        if let Some(value) = state.memtable.get(_key) {
+        if let Some(value) = snapshot.memtable.get(_key) {
             if value.is_empty() {
                 return Ok(None);
             } else {
@@ -309,7 +342,7 @@ impl LsmStorageInner {
             }
         }
 
-        for memtable in &self.state.read().imm_memtables {
+        for memtable in snapshot.imm_memtables.clone() {
             if let Some(value) = memtable.get(_key) {
                 if value.is_empty() {
                     return Ok(None);
@@ -318,6 +351,28 @@ impl LsmStorageInner {
                 }
             }
         }
+
+        let mut l0_iters = Vec::with_capacity(snapshot.l0_sstables.len());
+
+        // we don't know the sequence of sstables in L0, so we have to check all of them
+        for table_id in snapshot.l0_sstables.iter() {
+            let table = snapshot.sstables[table_id].clone();
+            let iter = SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(_key))?;
+            l0_iters.push(Box::new(iter));
+        }
+
+        // All L0 SSTable iterators have been seeked to the first key >= _key.
+        // The merge iterator selects the smallest current key among them.
+        // If _key exists in any L0 SSTable, the smallest key must be exactly _key.
+        let l0_iter = MergeIterator::create(l0_iters);
+        if l0_iter.is_valid() && l0_iter.key().raw_ref() == _key {
+            if l0_iter.value().is_empty() {
+                return Ok(None);
+            } else {
+                return Ok(Some(Bytes::copy_from_slice(l0_iter.value())));
+            }
+        }
+
         Ok(None)
     }
 
@@ -417,17 +472,59 @@ impl LsmStorageInner {
         _lower: Bound<&[u8]>,
         _upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        let mut tables: Vec<Box<crate::mem_table::MemTableIterator>> = Vec::new();
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
 
-        tables.push(Box::new(self.state.read().memtable.scan(_lower, _upper)));
+        let mut memtable_iters = Vec::with_capacity(snapshot.imm_memtables.len() + 1);
 
-        self.state
-            .read()
+        // memtable
+        memtable_iters.push(Box::new(snapshot.memtable.scan(_lower, _upper)));
+
+        // imm_memtables
+        snapshot
             .imm_memtables
             .iter()
-            .for_each(|m| tables.push(Box::new(m.scan(_lower, _upper))));
+            .for_each(|m| memtable_iters.push(Box::new(m.scan(_lower, _upper))));
 
-        let iter = FusedIterator::new(LsmIterator::new(MergeIterator::create(tables))?);
+        // sstables
+        let mut sstable_iters = Vec::with_capacity(snapshot.l0_sstables.len());
+        for table_id in snapshot.l0_sstables.iter() {
+            let table = snapshot.sstables[table_id].clone();
+            if range_overlap(
+                _lower,
+                _upper,
+                table.first_key().as_key_slice(),
+                table.last_key().as_key_slice(),
+            ) {
+                let iter = match _lower {
+                    Bound::Included(key) => {
+                        SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(key))?
+                    }
+                    Bound::Excluded(key) => {
+                        let mut iter = SsTableIterator::create_and_seek_to_key(
+                            table,
+                            KeySlice::from_slice(key),
+                        )?;
+                        while iter.is_valid() && iter.key().raw_ref() == key {
+                            iter.next()?;
+                        }
+                        iter
+                    }
+                    Bound::Unbounded => SsTableIterator::create_and_seek_to_first(table)?,
+                };
+                sstable_iters.push(Box::new(iter));
+            }
+        }
+
+        let iter = FusedIterator::new(LsmIterator::new(
+            TwoMergeIterator::create(
+                MergeIterator::create(memtable_iters),
+                MergeIterator::create(sstable_iters),
+            )?,
+            map_bound(_upper),
+        )?);
 
         Ok(iter)
     }
