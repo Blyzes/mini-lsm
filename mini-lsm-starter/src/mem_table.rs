@@ -92,8 +92,8 @@ impl MemTable {
     }
 
     /// Get a value by key.
-    pub fn get(&self, _key: &[u8]) -> Option<Bytes> {
-        self.map.get(_key).map(|v| v.value().clone())
+    pub fn get(&self, key: &[u8]) -> Option<Bytes> {
+        self.map.get(key).map(|v| v.value().clone())
     }
 
     /// Put a key-value pair into the mem-table.
@@ -101,9 +101,9 @@ impl MemTable {
     /// In week 1, day 1, simply put the key-value pair into the skipmap.
     /// In week 2, day 6, also flush the data to WAL.
     /// In week 3, day 5, modify the function to use the batch API.
-    pub fn put(&self, _key: &[u8], _value: &[u8]) -> Result<()> {
-        let key = Bytes::copy_from_slice(_key);
-        let value = Bytes::copy_from_slice(_value);
+    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+        let key = Bytes::copy_from_slice(key);
+        let value = Bytes::copy_from_slice(value);
 
         self.map.insert(key.clone(), value.clone());
 
@@ -127,10 +127,10 @@ impl MemTable {
     }
 
     /// Get an iterator over a range of keys.
-    pub fn scan(&self, _lower: Bound<&[u8]>, _upper: Bound<&[u8]>) -> MemTableIterator {
+    pub fn scan(&self, lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> MemTableIterator {
         let mut iter = MemTableIterator::new(
             self.map.clone(),
-            |map_ref| map_ref.range((map_bound(_lower), map_bound(_upper))),
+            |map_ref| map_ref.range((map_bound(lower), map_bound(upper))),
             (Bytes::new(), Bytes::new()),
         );
         let _ = iter.next();
@@ -138,8 +138,11 @@ impl MemTable {
     }
 
     /// Flush the mem-table to SSTable. Implement in week 1 day 6.
-    pub fn flush(&self, _builder: &mut SsTableBuilder) -> Result<()> {
-        unimplemented!()
+    pub fn flush(&self, builder: &mut SsTableBuilder) -> Result<()> {
+        for entry in self.map.iter() {
+            builder.add(KeySlice::from_slice(entry.key()), entry.value());
+        }
+        Ok(())
     }
 
     pub fn id(&self) -> usize {
