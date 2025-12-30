@@ -12,9 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-// #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::ops::Bound;
 
 use anyhow::{Result, bail};
@@ -162,12 +159,13 @@ impl<I: StorageIterator> StorageIterator for FusedIterator<I> {
         if self.has_errored {
             bail!("the iterator is invalid");
         }
-        if self.iter.is_valid() {
-            if let Err(e) = self.iter.next() {
-                self.has_errored = true;
-                return Err(e);
-            }
+        if self.iter.is_valid()
+            && let Err(e) = self.iter.next()
+        {
+            self.has_errored = true;
+            return Err(e);
         }
+
         Ok(())
     }
 

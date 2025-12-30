@@ -77,8 +77,7 @@ impl Bloom {
 
     /// Get bloom filter bits per key from entries count and FPR
     pub fn bloom_bits_per_key(entries: usize, false_positive_rate: f64) -> usize {
-        let size =
-            -1.0 * (entries as f64) * false_positive_rate.ln() / std::f64::consts::LN_2.powi(2);
+        let size = -(entries as f64) * false_positive_rate.ln() / std::f64::consts::LN_2.powi(2);
         let locs = (size / (entries as f64)).ceil();
         locs as usize
     }
@@ -87,13 +86,26 @@ impl Bloom {
     pub fn build_from_key_hashes(keys: &[u32], bits_per_key: usize) -> Self {
         let k = (bits_per_key as f64 * 0.69) as u32;
         let k = k.clamp(1, 30);
-        let nbits = (keys.len() * bits_per_key).max(64);
-        let nbytes = (nbits + 7) / 8;
+
+        // Compute required bits, with a minimum size to avoid tiny filters
+        let raw_nbits = (keys.len() * bits_per_key).max(64);
+        // Round up to full bytes and align bit count
+        let nbytes = raw_nbits.div_ceil(8);
         let nbits = nbytes * 8;
+
         let mut filter = BytesMut::with_capacity(nbytes);
         filter.resize(nbytes, 0);
 
-        // TODO: build the bloom filter
+        // use double hashing to generate k hash values
+        for &key in keys.iter() {
+            let mut h = key;
+            let delta = h.rotate_left(15);
+            for _ in 0..k {
+                let bit_pos = (h as usize) % nbits;
+                filter.set_bit(bit_pos, true);
+                h = h.wrapping_add(delta);
+            }
+        }
 
         Self {
             filter: filter.freeze(),
@@ -102,15 +114,20 @@ impl Bloom {
     }
 
     /// Check if a bloom filter may contain some data
-    pub fn may_contain(&self, h: u32) -> bool {
+    pub fn may_contain(&self, mut h: u32) -> bool {
         if self.k > 30 {
             // potential new encoding for short bloom filters
             true
         } else {
             let nbits = self.filter.bit_len();
             let delta = h.rotate_left(15);
-
-            // TODO: probe the bloom filter
+            for _ in 0..self.k {
+                let bit_pos = (h as usize) % nbits;
+                if !self.filter.get_bit(bit_pos) {
+                    return false;
+                }
+                h = h.wrapping_add(delta);
+            }
 
             true
         }

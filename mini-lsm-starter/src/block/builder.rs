@@ -17,7 +17,10 @@
 
 use bytes::BufMut;
 
-use crate::key::{KeySlice, KeyVec};
+use crate::{
+    block::SIZEOF_U16,
+    key::{KeySlice, KeyVec},
+};
 
 use super::Block;
 
@@ -33,6 +36,15 @@ pub struct BlockBuilder {
     first_key: KeyVec,
 }
 
+fn compute_overlap(first_key: KeySlice, key: KeySlice) -> usize {
+    let mut i = 0;
+    while i + 1 < key.len() && i + 1 < first_key.len() && key.raw_ref()[i] == first_key.raw_ref()[i]
+    {
+        i += 1
+    }
+    i
+}
+
 impl BlockBuilder {
     /// Creates a new block builder.
     pub fn new(block_size: usize) -> Self {
@@ -44,30 +56,38 @@ impl BlockBuilder {
         }
     }
 
+    fn estimated_size(&self) -> usize {
+        // length of data(u8)  | length of offsets(u16) | number of key-value pairs in the block
+        self.data.len() + self.offsets.len() * SIZEOF_U16 + SIZEOF_U16
+    }
+
     /// Adds a key-value pair to the block. Returns false when the block is full.
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        let key_len = key.len();
-        let value_len = value.len();
         // key_len(2) | key | value_len(2) | value
-        let entry_size = 2 + key_len + 2 + value_len;
+        let entry_size = SIZEOF_U16 + key.len() + SIZEOF_U16 + value.len();
 
-        let projected_size = entry_size + self.data.len() + (self.offsets.len() + 1) * 2 + 2;
-
-        if projected_size > self.block_size && !self.first_key.is_empty() {
+        if self.estimated_size() + entry_size > self.block_size && !self.first_key.is_empty() {
             return false;
         }
 
+        // offset of data
         self.offsets.push(self.data.len() as u16);
-
-        self.data.put_u16(key_len as u16);
-        self.data.put(key.raw_ref());
-        self.data.put_u16(value_len as u16);
+        let overlap = compute_overlap(self.first_key.as_key_slice(), key);
+        // encode key_overlap_len
+        self.data.put_u16(overlap as u16);
+        // encode rest_key_len
+        self.data.put_u16((key.len() - overlap) as u16);
+        // encode rest_key
+        self.data.put(&key.raw_ref()[overlap..]);
+        // encode value_len
+        self.data.put_u16(value.len() as u16);
+        // encode value
         self.data.put(value);
 
         if self.first_key.is_empty() {
-            self.first_key.append(key.raw_ref());
+            self.first_key = key.to_key_vec();
         }
 
         true

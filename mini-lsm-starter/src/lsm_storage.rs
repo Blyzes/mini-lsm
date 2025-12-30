@@ -24,6 +24,7 @@ use std::sync::atomic::AtomicUsize;
 
 use anyhow::{Context, Result, anyhow};
 use bytes::Bytes;
+use farmhash::fingerprint32;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -159,6 +160,10 @@ fn range_overlap(
         _ => {}
     }
     true
+}
+
+fn key_within(user_key: &[u8], table_begin: KeySlice, table_end: KeySlice) -> bool {
+    user_key >= table_begin.raw_ref() && user_key <= table_end.raw_ref()
 }
 
 #[derive(Clone, Debug)]
@@ -377,11 +382,28 @@ impl LsmStorageInner {
 
         let mut l0_iters = Vec::with_capacity(snapshot.l0_sstables.len());
 
+        let keep_table = |key: &[u8], table: &SsTable| {
+            if key_within(
+                key,
+                table.first_key().as_key_slice(),
+                table.last_key().as_key_slice(),
+            ) {
+                if let Some(bloom) = &table.bloom {
+                    return bloom.may_contain(fingerprint32(key));
+                }
+                return true;
+            };
+            false
+        };
+
         // we don't know the sequence of sstables in L0, so we have to check all of them
         for table_id in snapshot.l0_sstables.iter() {
             let table = snapshot.sstables[table_id].clone();
-            let iter = SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(key))?;
-            l0_iters.push(Box::new(iter));
+            if keep_table(key, &table) {
+                let iter =
+                    SsTableIterator::create_and_seek_to_key(table, KeySlice::from_slice(key))?;
+                l0_iters.push(Box::new(iter));
+            }
         }
 
         // All L0 SSTable iterators have been seeked to the first key >= _key.
@@ -494,7 +516,7 @@ impl LsmStorageInner {
         let sst = Arc::new(builder.build(
             sst_id,
             Some(self.block_cache.clone()),
-            &self.path_of_sst(sst_id),
+            self.path_of_sst(sst_id),
         )?);
 
         {

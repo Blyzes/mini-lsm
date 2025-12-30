@@ -12,21 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
-
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::BufMut;
+use farmhash::fingerprint32;
 
 use super::{BlockMeta, SsTable};
 use crate::{
     block::BlockBuilder,
     key::{KeySlice, KeyVec},
     lsm_storage::BlockCache,
-    table::FileObject,
+    table::{FileObject, bloom::Bloom},
 };
 
 /// Builds an SSTable from key-value pairs.
@@ -37,6 +35,7 @@ pub struct SsTableBuilder {
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
+    key_hashes: Vec<u32>,
 }
 
 impl SsTableBuilder {
@@ -50,6 +49,7 @@ impl SsTableBuilder {
             data: Vec::with_capacity(256 * 1024 * 1024),
             meta: Vec::new(),
             block_size,
+            key_hashes: Vec::new(),
         }
     }
 
@@ -61,6 +61,8 @@ impl SsTableBuilder {
         if self.first_key.is_empty() {
             self.first_key.set_from_slice(key);
         }
+
+        self.key_hashes.push(fingerprint32(key.raw_ref()));
 
         if self.builder.add(key, value) {
             self.last_key.set_from_slice(key);
@@ -108,35 +110,37 @@ impl SsTableBuilder {
         // finish current block before build
         self.finsh_block();
 
+        // Block Section
         let mut buf = self.data;
+
+        // Meta Section
         let meta_offset = buf.len();
         BlockMeta::encode_block_meta(&self.meta, &mut buf);
         buf.put_u32(meta_offset as u32);
+
+        let bloom = Bloom::build_from_key_hashes(
+            &self.key_hashes,
+            Bloom::bloom_bits_per_key(self.key_hashes.len(), 0.01),
+        );
+        let bloom_offset = buf.len();
+        bloom.encode(&mut buf);
+        buf.put_u32(bloom_offset as u32);
 
         let file = FileObject::create(path.as_ref(), buf)?;
         let first_key = self.meta.first().unwrap().first_key.clone();
         let last_key = self.meta.last().unwrap().last_key.clone();
 
-        let mut sstable = SsTable::create_meta_only(id, file.size(), first_key, last_key);
-
-        sstable.file = file;
-        sstable.block_meta = self.meta;
-        sstable.block_meta_offset = meta_offset;
-        sstable.block_cache = block_cache;
-
-        Ok(sstable)
-
-        // Ok(SsTable {
-        //     file,
-        //     first_key: self.meta.first().unwrap().first_key.clone(),
-        //     last_key: self.meta.last().unwrap().last_key.clone(),
-        //     block_meta: self.meta,
-        //     block_meta_offset: meta_offset,
-        //     id,
-        //     block_cache,
-        //     bloom: None,
-        //     max_ts: 0,
-        // })
+        Ok(SsTable {
+            file,
+            first_key,
+            last_key,
+            block_meta: self.meta,
+            block_meta_offset: meta_offset,
+            id,
+            block_cache,
+            bloom: Some(bloom),
+            max_ts: 0,
+        })
     }
 
     #[cfg(test)]
