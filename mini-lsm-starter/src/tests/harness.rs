@@ -73,7 +73,7 @@ impl StorageIterator for MockIterator {
         Ok(())
     }
 
-    fn key(&self) -> KeySlice {
+    fn key(&self) -> KeySlice<'_> {
         if let Some(error_when) = self.error_when {
             if self.index >= error_when {
                 panic!("invalid access after next returns an error!");

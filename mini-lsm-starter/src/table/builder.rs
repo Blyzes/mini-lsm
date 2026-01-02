@@ -30,9 +30,9 @@ use crate::{
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: KeyVec,
+    pub(crate) first_key: KeyVec,
     last_key: KeyVec,
-    data: Vec<u8>,
+    pub(crate) data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     block_size: usize,
     key_hashes: Vec<u32>,
@@ -96,6 +96,7 @@ impl SsTableBuilder {
     ///
     /// Since the data blocks contain much more data than meta blocks, just return the size of data
     /// blocks here.
+    /// Do NOT use this to check whether the builder contains any data.
     pub fn estimated_size(&self) -> usize {
         self.data.len()
     }
