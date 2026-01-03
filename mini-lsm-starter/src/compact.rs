@@ -127,6 +127,9 @@ pub enum CompactionOptions {
 }
 
 impl LsmStorageInner {
+    /// Compacts the SSTables according to the given compaction task.
+    ///
+    /// Returns the newly created SSTables.
     fn compact(&self, task: &CompactionTask) -> Result<Vec<Arc<SsTable>>> {
         let snapshot = {
             let guard = self.state.read();
@@ -155,6 +158,32 @@ impl LsmStorageInner {
                 TwoMergeIterator::create(
                     MergeIterator::create(l0_iters),
                     MergeIterator::create(l1_iters),
+                )?
+            }
+            CompactionTask::Simple(SimpleLeveledCompactionTask {
+                upper_level,
+                upper_level_sst_ids,
+                lower_level,
+                lower_level_sst_ids,
+                is_lower_level_bottom_level,
+            }) => {
+                let mut upper_ssts = Vec::with_capacity(upper_level_sst_ids.len());
+                for id in upper_level_sst_ids.iter() {
+                    upper_ssts.push(Box::new(SsTableIterator::create_and_seek_to_first(
+                        snapshot.sstables.get(id).unwrap().clone(),
+                    )?));
+                }
+
+                let mut lower_ssts = Vec::with_capacity(lower_level_sst_ids.len());
+                for id in lower_level_sst_ids.iter() {
+                    lower_ssts.push(Box::new(SsTableIterator::create_and_seek_to_first(
+                        snapshot.sstables.get(id).unwrap().clone(),
+                    )?));
+                }
+
+                TwoMergeIterator::create(
+                    MergeIterator::create(upper_ssts),
+                    MergeIterator::create(lower_ssts),
                 )?
             }
             _ => unimplemented!(),
@@ -210,6 +239,7 @@ impl LsmStorageInner {
         Ok(new_sst)
     }
 
+    /// Forces a full compaction of L0 and L1 SSTables.
     pub fn force_full_compaction(&self) -> Result<()> {
         let CompactionOptions::NoCompaction = self.options.compaction_options else {
             panic!("full compaction can only be called with compaction is not enabled")
@@ -263,10 +293,66 @@ impl LsmStorageInner {
         Ok(())
     }
 
+    /// Triggers a compaction if needed.
+    ///
+    /// This function checks if a compaction task needs to be scheduled, and if so, performs the compaction,
+    /// updates the storage state, and removes obsolete SST files.
     fn trigger_compaction(&self) -> Result<()> {
-        unimplemented!()
+        let snapshot = {
+            let guard = self.state.read();
+            Arc::clone(&guard)
+        };
+        let Some(task) = self
+            .compaction_controller
+            .generate_compaction_task(&snapshot)
+        else {
+            return Ok(());
+        };
+
+        println!("running compaction task: {:?}", task);
+
+        let sstables = self.compact(&task)?;
+        let files_added = sstables.len();
+        let output = sstables.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
+
+        let ssts_to_move = {
+            let state_lock = self.state_lock.lock();
+            let (mut new_state, files_to_move) = self
+                .compaction_controller
+                .apply_compaction_result(&self.state.read(), &task, &output, false);
+
+            let mut ssts_to_move = Vec::with_capacity(files_to_move.len());
+
+            for file in &files_to_move {
+                let res = new_state.sstables.remove(file);
+                assert!(res.is_some());
+                ssts_to_move.push(res.unwrap());
+            }
+
+            for new_sst in sstables {
+                let res = new_state.sstables.insert(new_sst.sst_id(), new_sst);
+                assert!(res.is_none());
+            }
+
+            let mut state = self.state.write();
+            *state = Arc::new(new_state);
+            ssts_to_move
+        };
+
+        println!(
+            "compaction finished: {} files removed, {} files added",
+            ssts_to_move.len(),
+            files_added
+        );
+        // don't remove files inside the state lock to avoid blocking other operations
+        for sst in ssts_to_move.iter() {
+            std::fs::remove_file(self.path_of_sst(sst.sst_id()))?;
+        }
+
+        Ok(())
     }
 
+    /// Spawns a background thread to periodically trigger compaction.
     pub(crate) fn spawn_compaction_thread(
         self: &Arc<Self>,
         rx: crossbeam_channel::Receiver<()>,
@@ -292,6 +378,7 @@ impl LsmStorageInner {
         Ok(None)
     }
 
+    /// Triggers a flush if needed.
     fn trigger_flush(&self) -> Result<()> {
         // use imm_memtables.len() to decide whether to flush rather than self.get_memtable_size()
         if self.state.read().imm_memtables.len() >= self.options.num_memtable_limit {
@@ -300,6 +387,7 @@ impl LsmStorageInner {
         Ok(())
     }
 
+    /// Spawns a background thread to periodically trigger flush.
     pub(crate) fn spawn_flush_thread(
         self: &Arc<Self>,
         rx: crossbeam_channel::Receiver<()>,
