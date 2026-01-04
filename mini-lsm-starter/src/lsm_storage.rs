@@ -412,7 +412,7 @@ impl LsmStorageInner {
         // iter of L1-Lmax sstables
         let mut level_iters = Vec::with_capacity(snapshot.levels.len());
         for (level, level_sst_ids) in &snapshot.levels {
-            let mut level_ssts = Vec::with_capacity(snapshot.levels[*level - 1].1.len());
+            let mut level_ssts = Vec::with_capacity(level_sst_ids.len());
             for table_id in level_sst_ids.iter() {
                 let table = snapshot.sstables[table_id].clone();
                 if keep_table(key, &table) {
@@ -554,11 +554,18 @@ impl LsmStorageInner {
             let mut snapshot: LsmStorageState = guard.as_ref().clone(); // √
 
             let mem = snapshot.imm_memtables.pop().expect("no imm memtable");
-            snapshot.l0_sstables.insert(0, sst_id);
+            assert_eq!(mem.id(), sst_id);
+            if self.compaction_controller.flush_to_l0() {
+                snapshot.l0_sstables.insert(0, sst_id);
+            } else {
+                snapshot.levels.insert(0, (sst_id, vec![sst_id]));
+            }
             println!("flushed {}.sst with size={}", sst_id, sst.table_size());
             snapshot.sstables.insert(sst_id, sst);
             *guard = Arc::new(snapshot)
         }
+
+        self.sync_dir()?;
 
         Ok(())
     }
@@ -625,7 +632,7 @@ impl LsmStorageInner {
         // iter of L1-Lmax sstables
         let mut level_iters = Vec::with_capacity(snapshot.levels.len());
         for (level, level_sst_ids) in &snapshot.levels {
-            let mut level_ssts = Vec::with_capacity(snapshot.levels[*level - 1].1.len());
+            let mut level_ssts = Vec::with_capacity(level_sst_ids.len());
             for table_id in level_sst_ids.iter() {
                 let table = snapshot.sstables[table_id].clone();
                 if range_overlap(

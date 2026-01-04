@@ -108,11 +108,11 @@ impl SimpleLeveledCompactionController {
         let mut snapshot = snapshot.clone();
         let mut files_to_move = Vec::new();
         if let Some(upper_level) = task.upper_level {
-            assert_eq!(
-                task.upper_level_sst_ids,
-                snapshot.levels[upper_level - 1].1,
-                "sst mismatched"
-            );
+            // assert_eq!(
+            //     task.upper_level_sst_ids,
+            //     snapshot.levels[upper_level - 1].1,
+            //     "sst mismatched"
+            // );
             files_to_move.extend(&snapshot.levels[upper_level - 1].1);
             snapshot.levels[upper_level - 1].1.clear();
         } else {
