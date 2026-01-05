@@ -219,6 +219,13 @@ impl LsmStorageInner {
                 lower_level,
                 lower_level_sst_ids,
                 is_lower_level_bottom_level,
+            })
+            | CompactionTask::Leveled(LeveledCompactionTask {
+                upper_level,
+                upper_level_sst_ids,
+                lower_level,
+                lower_level_sst_ids,
+                is_lower_level_bottom_level,
             }) => {
                 let mut upper_ssts = Vec::with_capacity(upper_level_sst_ids.len());
                 for id in upper_level_sst_ids.iter() {
@@ -264,7 +271,6 @@ impl LsmStorageInner {
                 let iter = MergeIterator::create(iters);
                 self.compact_generate_sst_from_iter(iter, task.compact_to_bottom_level())
             }
-            _ => unimplemented!(),
         }
     }
 
@@ -349,10 +355,21 @@ impl LsmStorageInner {
         let output = sstables.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
 
         let ssts_to_move = {
-            let state_lock = self.state_lock.lock();
+            let _state_lock = self.state_lock.lock();
+            let mut snapshot = self.state.read().as_ref().clone();
+            for new_sst in sstables {
+                let res = snapshot.sstables.insert(new_sst.sst_id(), new_sst);
+                assert!(res.is_none());
+            }
+
+            // Apply the compaction result on the SAME snapshot used to generate the task.
+            // We must not read the current global state again here, otherwise the compaction
+            // result could be applied to a different state version (e.g. after flush or
+            // another compaction), which would break state consistency and may lead to
+            // missing SSTs or invalid references.
             let (mut new_state, files_to_move) = self
                 .compaction_controller
-                .apply_compaction_result(&self.state.read(), &task, &output, false);
+                .apply_compaction_result(&snapshot, &task, &output, false);
 
             let mut ssts_to_move = Vec::with_capacity(files_to_move.len());
 
@@ -362,13 +379,9 @@ impl LsmStorageInner {
                 ssts_to_move.push(res.unwrap());
             }
 
-            for new_sst in sstables {
-                let res = new_state.sstables.insert(new_sst.sst_id(), new_sst);
-                assert!(res.is_none());
-            }
-
             let mut state = self.state.write();
             *state = Arc::new(new_state);
+            self.sync_dir()?;
             ssts_to_move
         };
 
@@ -381,6 +394,7 @@ impl LsmStorageInner {
         for sst in ssts_to_move.iter() {
             std::fs::remove_file(self.path_of_sst(sst.sst_id()))?;
         }
+        self.sync_dir()?;
 
         Ok(())
     }

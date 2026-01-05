@@ -105,7 +105,7 @@ impl TieredCompactionController {
         }
         println!("compaction triggered by reducing sorted runs");
 
-        return Some(TieredCompactionTask {
+        Some(TieredCompactionTask {
             tiers: snapshot
                 .levels
                 .iter()
@@ -113,7 +113,7 @@ impl TieredCompactionController {
                 .cloned()
                 .collect::<Vec<_>>(),
             bottom_tier_included: num_tiers_to_take >= snapshot.levels.len(),
-        });
+        })
     }
 
     pub fn apply_compaction_result(
