@@ -354,44 +354,60 @@ impl LsmStorageInner {
         let files_added = sstables.len();
         let output = sstables.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
 
-        let ssts_to_move = {
-            let _state_lock = self.state_lock.lock();
+        let ssts_to_remove = {
+            let state_lock = self.state_lock.lock();
             let mut snapshot = self.state.read().as_ref().clone();
+
+            // IMPORTANT:
+            // New SSTs must be inserted into snapshot BEFORE applying the compaction result.
+            // In leveled compaction, apply_compaction_result needs to rebuild and sort the
+            // target level based on first_key, which requires looking up the newly generated
+            // SSTs in snapshot.sstables. Applying compaction before inserting new SSTs would
+            // break level ordering and state consistency.
+            let mut new_sst_ids = Vec::new();
             for new_sst in sstables {
+                new_sst_ids.push(new_sst.sst_id());
                 let res = snapshot.sstables.insert(new_sst.sst_id(), new_sst);
                 assert!(res.is_none());
             }
 
-            // Apply the compaction result on the SAME snapshot used to generate the task.
+            // Apply the compaction result on the SAME snapshot which the new sstables are inserted.
             // We must not read the current global state again here, otherwise the compaction
             // result could be applied to a different state version (e.g. after flush or
             // another compaction), which would break state consistency and may lead to
             // missing SSTs or invalid references.
-            let (mut new_state, files_to_move) = self
+            let (mut snapshot, files_to_remove) = self
                 .compaction_controller
                 .apply_compaction_result(&snapshot, &task, &output, false);
 
-            let mut ssts_to_move = Vec::with_capacity(files_to_move.len());
+            let mut ssts_to_remove = Vec::with_capacity(files_to_remove.len());
 
-            for file in &files_to_move {
-                let res = new_state.sstables.remove(file);
+            for file in &files_to_remove {
+                let res = snapshot.sstables.remove(file);
                 assert!(res.is_some());
-                ssts_to_move.push(res.unwrap());
+                ssts_to_remove.push(res.unwrap());
             }
 
             let mut state = self.state.write();
-            *state = Arc::new(new_state);
+            *state = Arc::new(snapshot);
+            drop(state);
             self.sync_dir()?;
-            ssts_to_move
+            self.manifest.as_ref().unwrap().add_record(
+                &state_lock,
+                crate::manifest::ManifestRecord::Compaction(task, new_sst_ids),
+            )?;
+            ssts_to_remove
         };
 
         println!(
-            "compaction finished: {} files removed, {} files added",
-            ssts_to_move.len(),
-            files_added
+            "compaction finished: {} files removed, {} files added, output = {:?}",
+            ssts_to_remove.len(),
+            files_added,
+            output
         );
+
         // don't remove files inside the state lock to avoid blocking other operations
-        for sst in ssts_to_move.iter() {
+        for sst in ssts_to_remove.iter() {
             std::fs::remove_file(self.path_of_sst(sst.sst_id()))?;
         }
         self.sync_dir()?;

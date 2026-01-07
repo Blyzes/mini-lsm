@@ -15,11 +15,13 @@
 #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
-use std::fs::File;
+use std::fs::OpenOptions;
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
+use std::{fs::File, io::Write};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
@@ -37,23 +39,47 @@ pub enum ManifestRecord {
 }
 
 impl Manifest {
-    pub fn create(_path: impl AsRef<Path>) -> Result<Self> {
-        unimplemented!()
+    pub fn create(path: impl AsRef<Path>) -> Result<Self> {
+        let file = File::create_new(path).context("failed to create manifest")?;
+        Ok(Self {
+            file: Arc::new(Mutex::new(file)),
+        })
     }
 
-    pub fn recover(_path: impl AsRef<Path>) -> Result<(Self, Vec<ManifestRecord>)> {
-        unimplemented!()
+    pub fn recover(path: impl AsRef<Path>) -> Result<(Self, Vec<ManifestRecord>)> {
+        let mut file = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(path)
+            .context("failed to recover manifest")?;
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf)?;
+        let stream = serde_json::Deserializer::from_slice(&buf).into_iter::<ManifestRecord>();
+        let mut records = Vec::new();
+        for record in stream {
+            records.push(record?);
+        }
+        Ok((
+            Self {
+                file: Arc::new(Mutex::new(file)),
+            },
+            records,
+        ))
     }
 
     pub fn add_record(
         &self,
-        _state_lock_observer: &MutexGuard<()>,
+        state_lock_observer: &MutexGuard<()>,
         record: ManifestRecord,
     ) -> Result<()> {
         self.add_record_when_init(record)
     }
 
-    pub fn add_record_when_init(&self, _record: ManifestRecord) -> Result<()> {
-        unimplemented!()
+    pub fn add_record_when_init(&self, record: ManifestRecord) -> Result<()> {
+        let mut file = self.file.lock();
+        let buf = serde_json::to_vec(&record)?;
+        file.write_all(&buf)?;
+        file.sync_all()?;
+        Ok(())
     }
 }

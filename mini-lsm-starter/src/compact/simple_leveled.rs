@@ -106,17 +106,17 @@ impl SimpleLeveledCompactionController {
         output: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
         let mut snapshot = snapshot.clone();
-        let mut files_to_move = Vec::new();
+        let mut files_to_remove = Vec::new();
         if let Some(upper_level) = task.upper_level {
-            // assert_eq!(
-            //     task.upper_level_sst_ids,
-            //     snapshot.levels[upper_level - 1].1,
-            //     "sst mismatched"
-            // );
-            files_to_move.extend(&snapshot.levels[upper_level - 1].1);
+            assert_eq!(
+                task.upper_level_sst_ids,
+                snapshot.levels[upper_level - 1].1,
+                "sst mismatched"
+            );
+            files_to_remove.extend(&snapshot.levels[upper_level - 1].1);
             snapshot.levels[upper_level - 1].1.clear();
         } else {
-            files_to_move.extend(&task.upper_level_sst_ids);
+            files_to_remove.extend(&task.upper_level_sst_ids);
             let l0_ssts_compacted = task
                 .upper_level_sst_ids
                 .iter()
@@ -131,8 +131,8 @@ impl SimpleLeveledCompactionController {
             snapshot.levels[task.lower_level - 1].1,
             "sst mismatched"
         );
-        files_to_move.extend(&snapshot.levels[task.lower_level - 1].1);
+        files_to_remove.extend(&snapshot.levels[task.lower_level - 1].1);
         snapshot.levels[task.lower_level - 1].1 = output.to_vec();
-        (snapshot, files_to_move)
+        (snapshot, files_to_remove)
     }
 }

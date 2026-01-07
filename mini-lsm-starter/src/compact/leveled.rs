@@ -172,7 +172,7 @@ impl LeveledCompactionController {
         in_recovery: bool,
     ) -> (LsmStorageState, Vec<usize>) {
         let mut snapshot = snapshot.clone();
-        let mut files_to_move = Vec::new();
+        let mut files_to_remove = Vec::new();
         let upper_level_sst_ids_set = task.upper_level_sst_ids.iter().collect::<HashSet<_>>();
         let lower_level_sst_ids_set = task.lower_level_sst_ids.iter().collect::<HashSet<_>>();
 
@@ -186,8 +186,8 @@ impl LeveledCompactionController {
                 .retain(|sst| !upper_level_sst_ids_set.contains(sst));
         }
 
-        files_to_move.extend(&task.upper_level_sst_ids);
-        files_to_move.extend(&task.lower_level_sst_ids);
+        files_to_remove.extend(&task.upper_level_sst_ids);
+        files_to_remove.extend(&task.lower_level_sst_ids);
 
         // Remove compacted SSTs from lower level
         snapshot.levels[task.lower_level - 1]
@@ -201,16 +201,20 @@ impl LeveledCompactionController {
 
         // Promise the order of SSTs in lower level by their first keys
         // to make sure the correctness of binary search during read.
-        snapshot.levels[task.lower_level - 1].1.sort_by(|x, y| {
-            snapshot
-                .sstables
-                .get(x)
-                .unwrap()
-                .first_key()
-                .cmp(snapshot.sstables.get(y).unwrap().first_key())
-        });
-        // }
+        // we only updated the snapshot.levels and the sstables have not been added yet,
+        // so the sstables generated during compaction should be added to the snapshot
+        // in compact::LsmStorageInner::trigger_compaction before sorting.
+        if !in_recovery {
+            snapshot.levels[task.lower_level - 1].1.sort_by(|x, y| {
+                snapshot
+                    .sstables
+                    .get(x)
+                    .unwrap()
+                    .first_key()
+                    .cmp(snapshot.sstables.get(y).unwrap().first_key())
+            });
+        }
 
-        (snapshot, files_to_move)
+        (snapshot, files_to_remove)
     }
 }

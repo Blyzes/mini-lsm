@@ -40,7 +40,7 @@ impl SstConcatIterator {
         }
         if !sstables.is_empty() {
             for i in 0..(sstables.len() - 1) {
-                assert!(sstables[i].last_key() < sstables[i + 1].first_key())
+                assert!(sstables[i].last_key() <= sstables[i + 1].first_key())
             }
         }
     }

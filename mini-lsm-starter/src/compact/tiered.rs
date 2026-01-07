@@ -134,14 +134,14 @@ impl TieredCompactionController {
             .collect::<HashMap<_, _>>();
 
         let mut levels = Vec::new();
-        let mut files_to_move = Vec::new();
+        let mut files_to_remove = Vec::new();
         // marker
         let mut new_tier_added = false;
 
         for (tier_id, files) in snapshot.levels.iter() {
             if let Some(f) = tier_to_remove.remove(tier_id) {
                 assert_eq!(f, files, "files changed after issuing compacting task");
-                files_to_move.extend(f.iter().copied());
+                files_to_remove.extend(f.iter().copied());
             } else {
                 levels.push((*tier_id, files.clone()));
             }
@@ -156,6 +156,6 @@ impl TieredCompactionController {
         assert!(tier_to_remove.is_empty());
 
         snapshot.levels = levels;
-        (snapshot, files_to_move)
+        (snapshot, files_to_remove)
     }
 }
