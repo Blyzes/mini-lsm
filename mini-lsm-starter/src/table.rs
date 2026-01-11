@@ -20,7 +20,7 @@ use std::fs::File;
 use std::path::Path;
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 pub use builder::SsTableBuilder;
 use bytes::{Buf, BufMut};
 pub use iterator::SsTableIterator;
@@ -47,7 +47,7 @@ impl BlockMeta {
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
     pub fn encode_block_meta(
         block_meta: &[BlockMeta],
-        #[allow(clippy::ptr_arg)] // remove this allow after you finish
+        // #[allow(clippy::ptr_arg)] // remove this allow after you finish
         buf: &mut Vec<u8>,
     ) {
         let mut estimated_size = size_of::<u32>(); // number of blocks
@@ -64,8 +64,11 @@ impl BlockMeta {
             // The size of last key
             estimated_size += meta.last_key.len();
         }
+        // The size of checksum
+        estimated_size += size_of::<u32>();
         buf.reserve(estimated_size);
 
+        let original_len = buf.len();
         buf.put_u32(block_meta.len() as u32);
         for meta in block_meta {
             buf.put_u32(meta.offset as u32);
@@ -74,12 +77,15 @@ impl BlockMeta {
             buf.put_u16(meta.last_key.len() as u16);
             buf.put_slice(meta.last_key.raw_ref());
         }
+        buf.put_u32(crc32fast::hash(&buf[original_len + 4..]));
+        assert_eq!(estimated_size, buf.len() - original_len);
     }
 
     /// Decode block meta from a buffer.
-    pub fn decode_block_meta(mut buf: impl Buf) -> Vec<BlockMeta> {
+    pub fn decode_block_meta(mut buf: &[u8]) -> Result<Vec<BlockMeta>> {
         let mut block_meta = Vec::new();
         let num = buf.get_u32() as usize;
+        let checksum = crc32fast::hash(&buf[..buf.remaining() - 4]);
         for _ in 0..num {
             let offset = buf.get_u32() as usize;
             let first_key_len = buf.get_u16() as usize;
@@ -93,8 +99,11 @@ impl BlockMeta {
             };
             block_meta.push(meta);
         }
+        if buf.get_u32() != checksum {
+            bail!("meta checksum mismatched");
+        }
 
-        block_meta
+        Ok(block_meta)
     }
 }
 
@@ -158,7 +167,8 @@ impl SsTable {
 
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
-        // data block | metadata | metadata offset
+        // data blocks   | num of blocks |        metadata        |          bloom
+        // data|checksum                     metadata|chksum|offset    bloom|chksum|offset
         let len = file.size();
         let raw_bloom_offset = file.read(len - 4, 4)?;
         let bloom_offset = (&raw_bloom_offset[..]).get_u32() as u64;
@@ -167,8 +177,8 @@ impl SsTable {
 
         let raw_meta_offset = file.read(bloom_offset - 4, 4)?;
         let block_meta_offset = (&raw_meta_offset[..]).get_u32() as u64;
-        let raw_meta = file.read(block_meta_offset, len - 4 - block_meta_offset)?;
-        let block_meta = BlockMeta::decode_block_meta(&raw_meta[..]);
+        let raw_meta = file.read(block_meta_offset, bloom_offset - 4 - block_meta_offset)?;
+        let block_meta = BlockMeta::decode_block_meta(&raw_meta[..])?;
 
         let first_key = block_meta.first().unwrap().first_key.clone();
         let last_key = block_meta.last().unwrap().last_key.clone();
@@ -227,9 +237,17 @@ impl SsTable {
             .get(block_idx + 1)
             .map_or(self.block_meta_offset, |x| x.offset);
 
-        let block_len = offset_end - offset;
+        let block_len = offset_end - offset - 4;
+        let block_data_with_chksum = self
+            .file
+            .read(offset as u64, (offset_end - offset) as u64)?;
+        let block_data = &block_data_with_chksum[..block_len];
+        let check_sum = (&block_data_with_chksum[block_len..]).get_u32();
+        if check_sum != crc32fast::hash(block_data) {
+            bail!("block checksum mismatched");
+        }
 
-        let block = Block::decode(&self.file.read(offset as u64, block_len as u64)?);
+        let block = Block::decode(block_data);
 
         Ok(Arc::new(block))
     }

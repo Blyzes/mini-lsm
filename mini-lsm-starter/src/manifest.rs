@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
-#![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
+// #![allow(unused_variables)] // TODO(you): remove this lint after implementing this mod
+// #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::fs::OpenOptions;
 use std::io::Read;
@@ -21,7 +21,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::{fs::File, io::Write};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+use bytes::{Buf, BufMut};
 use parking_lot::{Mutex, MutexGuard};
 use serde::{Deserialize, Serialize};
 
@@ -54,10 +55,18 @@ impl Manifest {
             .context("failed to recover manifest")?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
-        let stream = serde_json::Deserializer::from_slice(&buf).into_iter::<ManifestRecord>();
+        let mut buf_ptr = buf.as_slice();
         let mut records = Vec::new();
-        for record in stream {
-            records.push(record?);
+        while buf_ptr.has_remaining() {
+            let len = buf_ptr.get_u64();
+            let slice = &buf_ptr[..len as usize];
+            let record = serde_json::from_slice::<ManifestRecord>(slice)?;
+            buf_ptr.advance(len as usize);
+            let checksum = buf_ptr.get_u32();
+            if checksum != crc32fast::hash(slice) {
+                bail!("checksum mismatched")
+            }
+            records.push(record);
         }
         Ok((
             Self {
@@ -69,7 +78,7 @@ impl Manifest {
 
     pub fn add_record(
         &self,
-        state_lock_observer: &MutexGuard<()>,
+        _state_lock_observer: &MutexGuard<()>,
         record: ManifestRecord,
     ) -> Result<()> {
         self.add_record_when_init(record)
@@ -77,7 +86,10 @@ impl Manifest {
 
     pub fn add_record_when_init(&self, record: ManifestRecord) -> Result<()> {
         let mut file = self.file.lock();
-        let buf = serde_json::to_vec(&record)?;
+        let mut buf = serde_json::to_vec(&record)?;
+        let hash = crc32fast::hash(&buf);
+        file.write_all(&(buf.len() as u64).to_be_bytes())?;
+        buf.put_u32(hash);
         file.write_all(&buf)?;
         file.sync_all()?;
         Ok(())
