@@ -138,33 +138,46 @@ impl LsmStorageInner {
         // Option tracks SST building state: Some = active, None = not building.
         // Prevents empty SSTs and enables take() for ownership transfer.
         let mut builder = None;
+        let mut last_key = Vec::<u8>::new();
 
         while iter.is_valid() {
             if builder.is_none() {
                 builder = Some(SsTableBuilder::new(self.options.block_size));
             }
 
-            let builder_inner = builder.as_mut().unwrap();
-            if compact_to_bottom_level {
-                if !iter.value().is_empty() {
-                    builder_inner.add(iter.key(), iter.value());
-                }
-            } else {
-                builder_inner.add(iter.key(), iter.value());
-            }
+            let same_as_last_key = iter.key().key_ref() == last_key;
 
-            if builder_inner.estimated_size() >= self.options.target_sst_size {
+            let builder_inner = builder.as_mut().unwrap();
+            // if compact_to_bottom_level {
+            //     if !iter.value().is_empty() {
+            //         builder_inner.add(iter.key(), iter.value());
+            //     }
+            // } else {
+            //     builder_inner.add(iter.key(), iter.value());
+            // }
+
+            if builder_inner.estimated_size() >= self.options.target_sst_size && !same_as_last_key {
                 let sst_id = self.next_sst_id();
 
-                let builder = builder.take().unwrap();
+                let old_builder = builder.take().unwrap();
 
-                let sst = Arc::new(builder.build(
+                let sst = Arc::new(old_builder.build(
                     sst_id,
                     Some(self.block_cache.clone()),
                     self.path_of_sst(sst_id),
                 )?);
                 new_sst.push(sst);
+                builder = Some(SsTableBuilder::new(self.options.block_size));
             }
+
+            let builder_inner = builder.as_mut().unwrap();
+            builder_inner.add(iter.key(), iter.value());
+
+            if !same_as_last_key {
+                last_key.clear();
+                last_key.extend(iter.key().key_ref());
+            }
+
             iter.next()?
         }
 

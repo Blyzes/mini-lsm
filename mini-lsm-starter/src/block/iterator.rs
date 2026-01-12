@@ -151,7 +151,7 @@ impl BlockIterator {
 
         // get the ref of key but the entry doesnot move, so we need to manually it.
         entry.advance(rest_key_len);
-        
+
         let ts = entry.get_u64();
         self.key.set_ts(ts);
 

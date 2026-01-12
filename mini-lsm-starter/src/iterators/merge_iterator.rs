@@ -60,7 +60,23 @@ pub struct MergeIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
+        if iters.is_empty() {
+            return Self {
+                iters: BinaryHeap::new(),
+                current: None,
+            };
+        }
+
         let mut heap = BinaryHeap::new();
+
+        if iters.iter().all(|x| !x.is_valid()) {
+            // All invalid, select the last one as the current.
+            let mut iters = iters;
+            return Self {
+                iters: heap,
+                current: Some(HeapWrapper(0, iters.pop().unwrap())),
+            };
+        }
 
         for (idx, iter) in iters.into_iter().enumerate() {
             if iter.is_valid() {
@@ -68,11 +84,10 @@ impl<I: StorageIterator> MergeIterator<I> {
             }
         }
 
-        let curr = if !heap.is_empty() { heap.pop() } else { None };
-
+        let current = heap.pop().unwrap();
         Self {
             iters: heap,
-            current: curr,
+            current: Some(current),
         }
     }
 }

@@ -67,7 +67,7 @@ impl BlockBuilder {
     /// You may find the `bytes::BufMut` trait useful for manipulating binary data.
     #[must_use]
     pub fn add(&mut self, key: KeySlice, value: &[u8]) -> bool {
-        // key_len(2) | key | value_len(2) | value
+        // overlap_key_len | rest_key_len(2) | key | value_len(2) | value
         let entry_size = SIZEOF_U16 + SIZEOF_U16 + key.raw_len() + SIZEOF_U16 + value.len();
 
         if self.estimated_size() + entry_size > self.block_size && !self.first_key.is_empty() {

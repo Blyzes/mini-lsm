@@ -94,7 +94,7 @@ impl SstConcatIterator {
         if idx >= sstables.len() {
             return Ok(Self {
                 current: None,
-                next_sst_idx: 0,
+                next_sst_idx: sstables.len(),
                 sstables,
             });
         }
