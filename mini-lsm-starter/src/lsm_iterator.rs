@@ -61,8 +61,8 @@ impl LsmIterator {
 
         match self.end_bound.as_ref() {
             Bound::Unbounded => {}
-            Bound::Included(key) => self.is_valid = self.inner.key().raw_ref() <= key,
-            Bound::Excluded(key) => self.is_valid = self.inner.key().raw_ref() < key,
+            Bound::Included(key) => self.is_valid = self.inner.key().key_ref() <= key,
+            Bound::Excluded(key) => self.is_valid = self.inner.key().key_ref() < key,
         }
 
         Ok(())
@@ -74,14 +74,14 @@ impl LsmIterator {
     /// - Skip entries with empty values (tombstones)
     fn move_to_next_valid_key(&mut self) -> Result<()> {
         loop {
-            while self.inner.is_valid() && self.inner.key().raw_ref() == self.prev_key {
+            while self.inner.is_valid() && self.inner.key().key_ref() == self.prev_key {
                 self.next_inner()?;
             }
             if !self.inner.is_valid() {
                 break;
             }
             self.prev_key.clear();
-            self.prev_key.extend(self.inner.key().raw_ref());
+            self.prev_key.extend(self.inner.key().key_ref());
 
             if !self.inner.value().is_empty() {
                 break;
@@ -99,7 +99,7 @@ impl StorageIterator for LsmIterator {
     }
 
     fn key(&self) -> &[u8] {
-        self.inner.key().raw_ref()
+        self.inner.key().key_ref()
     }
 
     fn value(&self) -> &[u8] {

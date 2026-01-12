@@ -46,7 +46,8 @@ impl Block {
         buf.get_u16(); // skip the empty overlap_key_len of first key
         let key_len = buf.get_u16() as usize;
         let key = &buf[..key_len];
-        KeyVec::from_vec(key.to_vec())
+        buf.advance(key_len);
+        KeyVec::from_vec_with_ts(key.to_vec(), buf.get_u64())
     }
 }
 
@@ -143,18 +144,23 @@ impl BlockIterator {
         let overlap_key_len = entry.get_u16() as usize;
         let rest_key_len = entry.get_u16() as usize;
         let key = &entry[..rest_key_len];
-        // get the ref of key but the entry doesnot move, so we need to manually it.
-        entry.advance(rest_key_len);
-
-        let value_len = entry.get_u16() as usize;
-        let value_offset_begin = offset + SIZEOF_U16 + SIZEOF_U16 + rest_key_len + SIZEOF_U16;
-        let value_offset_end = value_offset_begin + value_len;
-
         self.key.clear();
         self.key
-            .append(&self.first_key.raw_ref()[..overlap_key_len]);
+            .append(&self.first_key.key_ref()[..overlap_key_len]);
         self.key.append(key);
 
+        // get the ref of key but the entry doesnot move, so we need to manually it.
+        entry.advance(rest_key_len);
+        
+        let ts = entry.get_u64();
+        self.key.set_ts(ts);
+
+        let value_len = entry.get_u16() as usize;
+        let value_offset_begin =
+            offset + SIZEOF_U16 + SIZEOF_U16 + rest_key_len + size_of::<u64>() + SIZEOF_U16;
+        let value_offset_end = value_offset_begin + value_len;
+
         self.value_range = (value_offset_begin, value_offset_end);
+        entry.advance(value_len);
     }
 }
