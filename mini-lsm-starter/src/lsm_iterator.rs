@@ -36,16 +36,22 @@ pub struct LsmIterator {
     inner: LsmIteratorInner,
     end_bound: Bound<Bytes>,
     is_valid: bool,
+    read_ts: u64,
     prev_key: Vec<u8>,
 }
 
 impl LsmIterator {
     // Create a new LSM iterator from an existing iterator.
-    pub(crate) fn new(iter: LsmIteratorInner, end_bound: Bound<Bytes>) -> Result<Self> {
+    pub(crate) fn new(
+        iter: LsmIteratorInner,
+        end_bound: Bound<Bytes>,
+        read_ts: u64,
+    ) -> Result<Self> {
         let mut iter = Self {
             is_valid: iter.is_valid(),
             inner: iter,
             end_bound,
+            read_ts,
             prev_key: Vec::new(),
         };
         iter.move_to_next_valid_key()?;
@@ -74,14 +80,34 @@ impl LsmIterator {
     /// - Skip entries with empty values (tombstones)
     fn move_to_next_valid_key(&mut self) -> Result<()> {
         loop {
+            // skip key equal to prev_key (only consider the key value which maybe from mem, imm, sst)
             while self.inner.is_valid() && self.inner.key().key_ref() == self.prev_key {
                 self.next_inner()?;
             }
             if !self.inner.is_valid() {
                 break;
             }
+
+            // update the prev_key to current key for filtering in mvcc
             self.prev_key.clear();
             self.prev_key.extend(self.inner.key().key_ref());
+
+            // skip the key whose ts > read_ts, it shouldn't be visible
+            while self.inner.is_valid()
+                && self.inner.key().key_ref() == self.prev_key
+                && self.inner.key().ts() > self.read_ts
+            {
+                self.next_inner()?;
+            }
+
+            if !self.inner.is_valid() {
+                break;
+            }
+
+            // maybe all ts of key were skipped, then we need to move to next key
+            if self.inner.key().key_ref() != self.prev_key {
+                continue;
+            }
 
             if !self.inner.value().is_empty() {
                 break;

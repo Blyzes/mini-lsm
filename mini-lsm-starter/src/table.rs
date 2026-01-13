@@ -45,11 +45,7 @@ impl BlockMeta {
     /// Encode block meta to a buffer.
     /// You may add extra fields to the buffer,
     /// in order to help keep track of `first_key` when decoding from the same buffer in the future.
-    pub fn encode_block_meta(
-        block_meta: &[BlockMeta],
-        // #[allow(clippy::ptr_arg)] // remove this allow after you finish
-        buf: &mut Vec<u8>,
-    ) {
+    pub fn encode_block_meta(block_meta: &[BlockMeta], max_ts: u64, buf: &mut Vec<u8>) {
         let mut estimated_size = size_of::<u32>(); // number of blocks
 
         for meta in block_meta {
@@ -64,6 +60,8 @@ impl BlockMeta {
             // The size of last key
             estimated_size += meta.last_key.raw_len();
         }
+        // The size of max_ts
+        estimated_size += size_of::<u64>();
         // The size of checksum
         estimated_size += size_of::<u32>();
         buf.reserve(estimated_size);
@@ -79,12 +77,13 @@ impl BlockMeta {
             buf.put_slice(meta.last_key.key_ref());
             buf.put_u64(meta.last_key.ts());
         }
+        buf.put_u64(max_ts);
         buf.put_u32(crc32fast::hash(&buf[original_len + 4..]));
         assert_eq!(estimated_size, buf.len() - original_len);
     }
 
     /// Decode block meta from a buffer.
-    pub fn decode_block_meta(mut buf: &[u8]) -> Result<Vec<BlockMeta>> {
+    pub fn decode_block_meta(mut buf: &[u8]) -> Result<(Vec<BlockMeta>, u64)> {
         let mut block_meta = Vec::new();
         let num = buf.get_u32() as usize;
         let checksum = crc32fast::hash(&buf[..buf.remaining() - 4]);
@@ -103,11 +102,12 @@ impl BlockMeta {
             };
             block_meta.push(meta);
         }
+        let max_ts = buf.get_u64();
         if buf.get_u32() != checksum {
             bail!("meta checksum mismatched");
         }
 
-        Ok(block_meta)
+        Ok((block_meta, max_ts))
     }
 }
 
@@ -182,32 +182,22 @@ impl SsTable {
         let raw_meta_offset = file.read(bloom_offset - 4, 4)?;
         let block_meta_offset = (&raw_meta_offset[..]).get_u32() as u64;
         let raw_meta = file.read(block_meta_offset, bloom_offset - 4 - block_meta_offset)?;
-        let block_meta = BlockMeta::decode_block_meta(&raw_meta[..])?;
+        let (block_meta, max_ts) = BlockMeta::decode_block_meta(&raw_meta[..])?;
 
         let first_key = block_meta.first().unwrap().first_key.clone();
         let last_key = block_meta.last().unwrap().last_key.clone();
 
-        let mut sstable = SsTable::create_meta_only(id, file.size(), first_key, last_key);
-
-        sstable.file = file;
-        sstable.block_meta = block_meta;
-        sstable.block_meta_offset = block_meta_offset as usize;
-        sstable.block_cache = block_cache;
-        sstable.bloom = Some(bloom_filter);
-
-        Ok(sstable)
-
-        // Ok(Self {
-        //     file,
-        //     block_meta,
-        //     block_meta_offset: block_meta_offset as usize,
-        //     id,
-        //     block_cache,
-        //     first_key,
-        //     last_key,
-        //     bloom: (),
-        //     max_ts: (),
-        // })
+        Ok(Self {
+            file,
+            block_meta,
+            block_meta_offset: block_meta_offset as usize,
+            id,
+            block_cache,
+            first_key,
+            last_key,
+            bloom: Some(bloom_filter),
+            max_ts,
+        })
     }
 
     /// Create a mock SST with only first key + last key metadata
