@@ -36,7 +36,7 @@ use crate::iterators::concat_iterator::SstConcatIterator;
 use crate::iterators::merge_iterator::MergeIterator;
 use crate::iterators::two_merge_iterator::TwoMergeIterator;
 use crate::key::KeySlice;
-use crate::lsm_storage::{LsmStorageInner, LsmStorageState};
+use crate::lsm_storage::{CompactionFilter, LsmStorageInner, LsmStorageState};
 use crate::table::{SsTable, SsTableBuilder, SsTableIterator};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -141,8 +141,9 @@ impl LsmStorageInner {
         let mut last_key = Vec::<u8>::new();
         let watermark = self.mvcc().watermark();
         let mut first_key_below_watermark = false;
+        let compaction_filter = self.compaction_filters.lock().clone();
 
-        while iter.is_valid() {
+        'outer: while iter.is_valid() {
             if builder.is_none() {
                 builder = Some(SsTableBuilder::new(self.options.block_size));
             }
@@ -167,12 +168,26 @@ impl LsmStorageInner {
             }
 
             // Skip keys below watermark except for the first key when there are multiple versions.
-            if same_as_last_key && iter.key().ts() <= watermark {
-                if !first_key_below_watermark {
+            if iter.key().ts() <= watermark {
+                if same_as_last_key && !first_key_below_watermark {
                     iter.next()?;
                     continue;
                 }
-                first_key_below_watermark = false
+                first_key_below_watermark = false;
+
+                // Apply compaction filters to keys below watermark.
+                if !compaction_filter.is_empty() {
+                    for filter in &compaction_filter {
+                        match filter {
+                            CompactionFilter::Prefix(x) => {
+                                if iter.key().key_ref().starts_with(x) {
+                                    iter.next()?;
+                                    continue 'outer;
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             let builder_inner = builder.as_mut().unwrap();
