@@ -174,7 +174,6 @@ impl LeveledCompactionController {
         let mut snapshot = snapshot.clone();
         let mut files_to_remove = Vec::new();
         let upper_level_sst_ids_set = task.upper_level_sst_ids.iter().collect::<HashSet<_>>();
-        let lower_level_sst_ids_set = task.lower_level_sst_ids.iter().collect::<HashSet<_>>();
 
         if let Some(upper_level) = task.upper_level {
             snapshot.levels[upper_level - 1]
