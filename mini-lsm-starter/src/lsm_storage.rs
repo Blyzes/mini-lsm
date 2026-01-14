@@ -575,42 +575,67 @@ impl LsmStorageInner {
         Ok(None)
     }
 
-    /// Write a batch of data into the storage. Implement in week 2 day 7.
-    pub fn write_batch<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<()> {
+    pub fn write_batch_inner<T: AsRef<[u8]>>(&self, batch: &[WriteBatchRecord<T>]) -> Result<u64> {
         let _lck = self.mvcc().write_lock.lock();
         let ts = self.mvcc().latest_commit_ts() + 1;
+        let mut batch_datas = Vec::new();
         for record in batch {
             match record {
                 WriteBatchRecord::Put(key, value) => {
                     let key = key.as_ref();
                     let value = value.as_ref();
-                    let size;
-                    {
-                        let guard = self.state.read();
-                        guard.memtable.put(KeySlice::from_slice(key, ts), value)?;
-                        size = guard.memtable.approximate_size();
-                    }
-                    self.try_freeze(size)?;
+                    assert!(!key.is_empty(), "key cannot be empty");
+                    assert!(!value.is_empty(), "value cannot be empty");
+                    batch_datas.push((KeySlice::from_slice(key, ts), value));
                 }
                 WriteBatchRecord::Del(key) => {
                     let key = key.as_ref();
-                    let size;
-                    {
-                        let guard = self.state.read();
-                        guard.memtable.put(KeySlice::from_slice(key, ts), b"")?;
-                        size = guard.memtable.approximate_size();
-                    }
-                    self.try_freeze(size)?;
+                    assert!(!key.is_empty(), "key cannot be empty");
+                    batch_datas.push((KeySlice::from_slice(key, ts), b""));
                 }
             }
         }
+        let size = {
+            let guard = self.state.read();
+            guard.memtable.put_batch(&batch_datas)?;
+            guard.memtable.approximate_size()
+        };
+        self.try_freeze(size)?;
         self.mvcc().update_commit_ts(ts);
+        Ok(ts)
+    }
+
+    /// Write a batch of data into the storage. Implement in week 2 day 7.
+    pub fn write_batch<T: AsRef<[u8]>>(
+        self: &Arc<Self>,
+        batch: &[WriteBatchRecord<T>],
+    ) -> Result<()> {
+        if !self.options.serializable {
+            self.write_batch_inner(batch)?;
+        } else {
+            let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+            for record in batch {
+                match record {
+                    WriteBatchRecord::Del(key) => txn.delete(key.as_ref()),
+                    WriteBatchRecord::Put(key, value) => txn.put(key.as_ref(), value.as_ref()),
+                }
+            }
+            txn.commit()?;
+        }
+
         Ok(())
     }
 
     /// Put a key-value pair into the storage by writing into the current memtable.
     pub fn put(self: &Arc<Self>, key: &[u8], value: &[u8]) -> Result<()> {
-        self.write_batch(&[WriteBatchRecord::Put(key, value)])?;
+        if !self.options.serializable {
+            self.write_batch_inner(&[WriteBatchRecord::Put(key, value)])?;
+        } else {
+            let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+            txn.put(key.as_ref(), value.as_ref());
+            txn.commit()?;
+        }
+
         Ok(())
     }
 
@@ -618,7 +643,14 @@ impl LsmStorageInner {
     pub fn delete(self: &Arc<Self>, key: &[u8]) -> Result<()> {
         // use LsmStorageInner.put() not MemTable.put()
         // if use MemTable.put(), the force_freeze_memtable will not be triggerd
-        self.write_batch(&[WriteBatchRecord::Del(key)])?;
+        if !self.options.serializable {
+            self.write_batch_inner(&[WriteBatchRecord::Del(key)])?;
+        } else {
+            let txn = self.mvcc().new_txn(self.clone(), self.options.serializable);
+            txn.delete(key.as_ref());
+            txn.commit()?;
+        }
+
         Ok(())
     }
 
